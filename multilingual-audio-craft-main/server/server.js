@@ -17,17 +17,41 @@ if (!fs.existsSync(audioDir)) {
 }
 
 // Enable CORS for frontend
-app.use(cors());
+app.use(cors({
+  origin: ['http://localhost:5173', 'http://127.0.0.1:5173'],
+  methods: ['GET', 'POST'],
+  credentials: true
+}));
 
 // Parse JSON requests
 app.use(express.json());
 
-// Serve static files
-app.use("/audio", express.static(path.join(__dirname, "public", "audio")));
+// Serve static files with CORS headers
+app.use("/audio", (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET');
+  next();
+}, express.static(path.join(__dirname, "public", "audio")));
+
+// Root route
+app.get("/", (req, res) => {
+  res.json({
+    message: "Welcome to Multilingual Audio Craft API",
+    endpoints: {
+      health: "/api/health",
+      tts: "/api/tts (POST)",
+      audio: "/audio (GET)"
+    }
+  });
+});
 
 // Simple health check endpoint
 app.get("/api/health", (req, res) => {
-  res.json({ status: "ok", message: "Coqui TTS server is running" });
+  res.json({ 
+    status: "ok", 
+    message: "Coqui TTS server is running",
+    timestamp: new Date().toISOString()
+  });
 });
 
 // TTS API endpoint
@@ -53,12 +77,20 @@ app.post("/api/tts", async (req, res) => {
       const phonemes = generatePhonemes(text, language);
 
       res.json({
-        audioUrl: `/audio/${filename}`, // ✅ Relative path works fine since server is same
+        audioUrl: `/audio/${filename}`,
         phonemes: phonemes,
+        message: "Speech generated successfully"
       });
     } catch (error) {
       console.error("TTS Error:", error);
-      res.status(500).json({ error: "Failed to generate speech" });
+      if (error.message.includes("model")) {
+        res.status(503).json({ 
+          error: "TTS model is still downloading. Please try again in a few minutes.",
+          details: error.message
+        });
+      } else {
+        res.status(500).json({ error: "Failed to generate speech" });
+      }
     }
   } catch (error) {
     console.error("Server Error:", error);
@@ -69,8 +101,7 @@ app.post("/api/tts", async (req, res) => {
 // Function to run Coqui TTS via Python script
 function runCoquiTTS(text, language, outputPath) {
   return new Promise((resolve, reject) => {
-    const langCode =
-      language === "hindi" ? "hi" : language === "mixed" ? "mixed" : "en";
+    const langCode = language === "hindi" ? "hi" : language === "mixed" ? "mixed" : "en";
 
     console.log(`Running Coqui TTS for "${text}" in ${language} (${langCode})`);
 
@@ -104,23 +135,7 @@ function runCoquiTTS(text, language, outputPath) {
       } else {
         console.error(`TTS process exited with code ${code}`);
         console.error(`Error output: ${pythonError}`);
-
-        try {
-          const samplePath = path.join(__dirname, "samples", `${language}.wav`);
-          if (fs.existsSync(samplePath)) {
-            fs.copyFileSync(samplePath, outputPath);
-            console.warn("Falling back to sample audio");
-            resolve(outputPath);
-          } else {
-            reject(new Error(`TTS failed with code ${code}: ${pythonError}`));
-          }
-        } catch (fallbackError) {
-          reject(
-            new Error(
-              `TTS failed and fallback failed: ${fallbackError.message}`
-            )
-          );
-        }
+        reject(new Error(`TTS failed with code ${code}: ${pythonError}`));
       }
     });
   });
@@ -140,9 +155,23 @@ function generatePhonemes(text, language) {
     });
 }
 
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({
+    error: "Something went wrong!",
+    message: err.message
+  });
+});
+
 // Start server
 app.listen(PORT, () => {
   console.log(`✅ Server running on http://localhost:${PORT}`);
   console.log(`🎵 Audio files served at http://localhost:${PORT}/audio`);
   console.log(`📣 TTS endpoint: http://localhost:${PORT}/api/tts`);
+  console.log(`\nAvailable endpoints:`);
+  console.log(`- GET  /              - API information`);
+  console.log(`- GET  /api/health    - Health check`);
+  console.log(`- POST /api/tts       - Text to speech`);
+  console.log(`- GET  /audio/*       - Audio files`);
 });
